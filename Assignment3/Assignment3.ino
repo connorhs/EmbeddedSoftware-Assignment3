@@ -1,19 +1,26 @@
 
+#define watchdogPin 26
+#define digitalInputPin 33
+#define frequencyMeasurePin 27
 #define ledPin 25
 #define analogueReadPin 32
+#define timingPin 14
 
 #define semaphoreWaitTime 1000
 
 float newestAnalogueReading = 0.0;
 float filterArray[] = {0, 0, 0, 0};
+unsigned char errorCode = 0;
 
 struct Data
 {
-  float analogueReading;
+  unsigned char buttonState;
+  unsigned int measuredFrequency;
   float averageAnalogueReading;
-} taskData = { 0, 0 };
+} taskData = { 0, 0, 0 };
 
 SemaphoreHandle_t dataProtectionSemaphore;
+QueueHandle_t analogueReadingQueue, errorCodeQueue;
 
 struct Task 
 {
@@ -21,9 +28,114 @@ struct Task
   TaskHandle_t taskHandle;
 };
 
+/*
+ *  Task definitions
+ */
+
+// Task 1: Digital watchdog
+static void digitalWatchdogTask(void *pvParameters)
+{
+    Task task1 = {20, 0};
+
+    for (;;)
+    { 
+       // Pulse the output high for 50 microseconds
+       digitalWrite(watchdogPin, HIGH);
+       // Blocking delay or vTaskDelay?
+       delayMicroseconds(50);
+       // Set the output low until the task is re-executed 20ms later
+       digitalWrite(watchdogPin, LOW);
+    
+       // Check stack size
+//       unsigned int temp = uxTaskGetStackHighWaterMark(nullptr);
+//       printf("\nHigh stack water mark is %d", temp);
+          
+       // Free up the CPU while delaying the task, allowing freeRTOS to run other tasks
+       vTaskDelay(task1.taskDelay); 
+    }
+}
+
+// Task 2: Digital input
+static void digitalInputTask(void *pvParameters)
+{
+    Task task2 = {200, 0};
+
+    unsigned char timingState = 0;
+  
+    unsigned char state = 0;
+    unsigned char oldState = 0;
+    unsigned char buttonState = 0;
+
+    for (;;)
+    { 
+      // If the button has been pressed
+      if (digitalRead(digitalInputPin)) { state = 1; }
+      else { state = 0; }
+
+      if (state != oldState)
+      {
+        // Toggle the input state variable
+        if (buttonState == 0) buttonState = 1;
+        else buttonState = 0;  
+
+        oldState = state;
+      }
+
+      // Update the data struct. This is a shared resource and must be protected with a semaphore
+      xSemaphoreTake(dataProtectionSemaphore, semaphoreWaitTime / portTICK_PERIOD_MS);
+      taskData.buttonState = state;
+      xSemaphoreGive(dataProtectionSemaphore);
+
+      if (timingState == 0)
+      {
+        timingState = 1;
+        digitalWrite(timingPin, HIGH);
+      }
+      else
+      {
+        timingState = 0;
+        digitalWrite(timingPin, LOW);  
+      }
+      
+      // Check stack size
+//      unsigned int temp = uxTaskGetStackHighWaterMark(nullptr);
+//      printf("\nHigh stack water mark is %d", temp);
+        
+      // Free up the CPU while delaying the task, allowing freeRTOS to run other tasks
+      vTaskDelay(task2.taskDelay); 
+    }
+}
+
+// Task 3: Measure frequency of square wave
+static void frequencyMeasureTask(void *pvParameters)
+{
+  Task task3 = {1000, 0};
+
+  for (;;)
+  {
+    // Use the pulseIn() Arduino function to get the high period of the square wave in microseconds. This is half the period of the full square wave
+    float period = pulseIn(frequencyMeasurePin, HIGH);
+    // Double the high period to get the period of the full square wave
+    period *= 2;
+    // Get the frequency in Hz: f = 1/T(s) = 1000000/T(us)
+    xSemaphoreTake(dataProtectionSemaphore, semaphoreWaitTime / portTICK_PERIOD_MS);
+    taskData.measuredFrequency = 1000000 / period;
+    xSemaphoreGive(dataProtectionSemaphore);
+    //measuredFrequency = 1000000 / period;
+    
+    // Check stack size
+//    unsigned int temp = uxTaskGetStackHighWaterMark(nullptr);
+//    printf("\nHigh stack water mark is %d", temp);
+      
+    // Free up the CPU while delaying the task, allowing freeRTOS to run other tasks
+    vTaskDelay(task3.taskDelay); 
+  }
+}
+
+// Task 4: Read the analogue value of a potentiometer
 static void analogueReadTask(void *pvParameters)
 {
-  Task analogueRead = {1000, 0};
+  Task task4 = {42, 0};
 
   for (;;)
   {
@@ -35,28 +147,25 @@ static void analogueReadTask(void *pvParameters)
       analogueVoltage = (float)analogueVoltage / 1000;
       newestAnalogueReading = analogueVoltage;
       
-      // Update the data struct. This is a shared resource and must be protected with a semaphore
-      xSemaphoreTake(dataProtectionSemaphore, semaphoreWaitTime / portTICK_PERIOD_MS);
-      taskData.analogueReading = analogueVoltage;
-      xSemaphoreGive(dataProtectionSemaphore);
-      
-      printf("\nAnalogue Reading: %.2f", taskData.analogueReading);
-      
       // Check stack size
 //      unsigned int temp = uxTaskGetStackHighWaterMark(nullptr);
 //      printf("\nHigh stack water mark is %d", temp);
       
       // Free up the CPU while delaying the task, allowing freeRTOS to run other tasks
-      vTaskDelay(analogueRead.taskDelay);
+      vTaskDelay(task4.taskDelay);
   }
 }
 
+
+
+// Task 5: Average the last four readings of task 4
 static void analogueAverageTask(void *pvParameters)
 {  
-    Task average = {1000, 0};
-  
+    Task task5 = {42, 0};
+    
     for (;;)
     {
+        
         float filteredVoltage = 0.0;
         // Shift new reading into filter
         for (int i = 3; i >= 0; i--)
@@ -83,42 +192,213 @@ static void analogueAverageTask(void *pvParameters)
         taskData.averageAnalogueReading = filteredVoltage;
         xSemaphoreGive(dataProtectionSemaphore);
         
-        printf("\nAverage analogue reading: %.2f", taskData.averageAnalogueReading);
-            
         // Check stack size
 //        unsigned int temp = uxTaskGetStackHighWaterMark(nullptr);
 //        printf("\nHigh stack water mark is %d", temp);
         
         // Free up the CPU while delaying the task, allowing freeRTOS to run other tasks
-        vTaskDelay(average.taskDelay);
+        vTaskDelay(task5.taskDelay);
     }
 }
 
+// Task 6: Execute the "nop" command 1000 times
+static void NOPTask(void *pvParameters)
+{
+  Task task6 = {100, 0};
+
+  for (;;)
+  {
+    for(int i = 0; i < 1000; i++)
+    {
+       __asm__ __volatile__ ("nop");  
+    }
+    
+    // Check stack size
+//    unsigned int temp = uxTaskGetStackHighWaterMark(nullptr);
+//    printf("\nHigh stack water mark is %d", temp);
+      
+    // Free up the CPU while delaying the task, allowing freeRTOS to run other tasks
+    vTaskDelay(task6.taskDelay); 
+  }
+}
+
+// Task 7: Get an error code based on the current filtered potentiometer reading
+static void errorCodeTask(void *pvParameters)
+{
+  Task task7 = {333, 0};
+
+  for (;;)
+  {
+    // Get the average reading from the protected data struct
+    xSemaphoreTake(dataProtectionSemaphore, semaphoreWaitTime / portTICK_PERIOD_MS);
+    float filteredAnalgoueReading = taskData.averageAnalogueReading;
+    xSemaphoreGive(dataProtectionSemaphore);
+  
+    // If filtered analogue value is greater than half of the maximum range (3.3V / 2 = 1.65V)
+    if (filteredAnalgoueReading > 1.65)
+    {
+      errorCode = 1;
+    }
+    else
+    {
+      errorCode = 0;
+    }
+    
+    // Check stack size
+//    unsigned int temp = uxTaskGetStackHighWaterMark(nullptr);
+//    printf("\nHigh stack water mark is %d", temp);
+      
+    // Free up the CPU while delaying the task, allowing freeRTOS to run other tasks
+    vTaskDelay(task7.taskDelay);
+  }
+}
+
+// Task 8: Visualise the error code from task 7
+static void errorCodeLEDTask(void *pvParameters)
+{
+  Task task8 = {333, 0};
+
+  for (;;)
+  {
+    // Turn LED on if the error code is 1
+    if (errorCode == 1)
+      digitalWrite(ledPin, HIGH);
+    // Turn LED off if the error code is 0
+    else
+      digitalWrite(ledPin, LOW);
+    
+    // Check stack size
+//    unsigned int temp = uxTaskGetStackHighWaterMark(nullptr);
+//    printf("\nHigh stack water mark is %d", temp);
+      
+    // Free up the CPU while delaying the task, allowing freeRTOS to run other tasks
+    vTaskDelay(task8.taskDelay); 
+  } 
+}
+
+// Task 9: Print data
+static void dataPrintTask(void *pvParameters)
+{
+    Task task9 = {2000, 0};
+
+    Data printData = { 0, 0, 0 };
+    
+    for (;;)
+    { 
+      // Get data from the semaphore protected data struct
+      xSemaphoreTake(dataProtectionSemaphore, semaphoreWaitTime / portTICK_PERIOD_MS);
+      printData.buttonState = taskData.buttonState;
+      printData.measuredFrequency = taskData.measuredFrequency;
+      printData.averageAnalogueReading = taskData.averageAnalogueReading;
+      xSemaphoreGive(dataProtectionSemaphore);
+
+      if (printData.buttonState == 1)
+      {
+        // Once the local data struct has been updated, print the data in the non-critical region
+        printf("\n%d, %d, %.2f", printData.buttonState, printData.measuredFrequency, printData.averageAnalogueReading);
+      }
+      
+      // Check stack size
+//      unsigned int temp = uxTaskGetStackHighWaterMark(nullptr);
+//      printf("\nHigh stack water mark is %d", temp);
+        
+      // Free up the CPU while delaying the task, allowing freeRTOS to run other tasks
+      vTaskDelay(task9.taskDelay); 
+    }
+}
+
+/*
+ *  Set up the inputs and RTOS tasks
+ */
 void setup() {
   Serial.begin(115200);
   while (!Serial);
   delay(500);
   pinMode(ledPin, OUTPUT);
+  pinMode(watchdogPin, OUTPUT);
+  pinMode(digitalInputPin, INPUT);
+  pinMode(timingPin, OUTPUT);
 
+  // Create a semaphore to protect the data struct resource
   dataProtectionSemaphore = xSemaphoreCreateBinary();
+  analogueReadingQueue = xQueueCreate(1, sizeof(float));
+  errorCodeQueue = xQueueCreate(1, sizeof(unsigned char));
 
+  // Create tasks 1-9
   xTaskCreate(
-    analogueReadTask,  
-    "ReadPotentiometer",
+    digitalWatchdogTask,  
+    "Task1",
     2048,
     NULL,
     1,
+    NULL );
+
+  xTaskCreate(
+    digitalInputTask,  
+    "Task2",
+    2048,
+    NULL,
+    5,
+    NULL );
+
+  xTaskCreate(
+    frequencyMeasureTask,  
+    "Task3",
+    2048,
+    NULL,
+    8,
+    NULL );
+  
+  xTaskCreate(
+    analogueReadTask,  
+    "Task4",
+    2048,
+    NULL,
+    2,
     NULL );
 
   xTaskCreate(
     analogueAverageTask,  
-    "AveragePotentiometer",
+    "Task5",
     2048,
     NULL,
-    1,
+    3,
+    NULL );
+
+  xTaskCreate(
+    NOPTask,  
+    "Task6",
+    2048,
+    NULL,
+    4,
+    NULL );
+
+  xTaskCreate(
+    errorCodeTask,  
+    "Task7",
+    2048,
+    NULL,
+    6,
+    NULL );
+
+  xTaskCreate(
+    errorCodeLEDTask,  
+    "Task8",
+    2048,
+    NULL,
+    7,
+    NULL );
+
+  xTaskCreate(
+    dataPrintTask,  
+    "Task9",
+    2048,
+    NULL,
+    9,
     NULL );
 }
 
+// Loop funciton is empty
 void loop()
 {
 }
