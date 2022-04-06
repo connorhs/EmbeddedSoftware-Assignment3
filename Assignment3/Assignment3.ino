@@ -8,7 +8,7 @@
 
 #define semaphoreWaitTime 1000
 
-float newestAnalogueReading = 0.0;
+//float newestAnalogueReading = 0.0;
 float filterArray[] = {0, 0, 0, 0};
 unsigned char errorCode = 0;
 
@@ -145,7 +145,10 @@ static void analogueReadTask(void *pvParameters)
       float analogueVoltage = map(analogueReading, 0, 4095, 0, 3300);
       // Cast int to float and divide into correct range
       analogueVoltage = (float)analogueVoltage / 1000;
-      newestAnalogueReading = analogueVoltage;
+      //newestAnalogueReading = analogueVoltage;
+      // Send the newest reading to the queue, where it will be recieved by the averaging task. If the queue is full, then the average has not been taken yet
+      // and this task should wait. The maximum wait time is defined as 10 ticks
+      xQueueSend(analogueReadingQueue, &analogueVoltage, 10);
       
       // Check stack size
 //      unsigned int temp = uxTaskGetStackHighWaterMark(nullptr);
@@ -167,6 +170,11 @@ static void analogueAverageTask(void *pvParameters)
     {
         
         float filteredVoltage = 0.0;
+
+        // Get the most recent analogue reading from the queue
+        float newestAnalogueReading = 0.0;
+        xQueueReceive(analogueReadingQueue, &newestAnalogueReading, 10);
+        
         // Shift new reading into filter
         for (int i = 3; i >= 0; i--)
         {
@@ -321,8 +329,8 @@ void setup() {
 
   // Create a semaphore to protect the data struct resource
   dataProtectionSemaphore = xSemaphoreCreateBinary();
-  analogueReadingQueue = xQueueCreate(1, sizeof(float));
-  errorCodeQueue = xQueueCreate(1, sizeof(unsigned char));
+  analogueReadingQueue = xQueueCreate(2, sizeof(float));
+  errorCodeQueue = xQueueCreate(2, sizeof(unsigned char));
 
   // Create tasks 1-9
   xTaskCreate(
