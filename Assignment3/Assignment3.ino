@@ -10,7 +10,7 @@
 
 //float newestAnalogueReading = 0.0;
 float filterArray[] = {0, 0, 0, 0};
-unsigned char errorCode = 0;
+//unsigned char errorCode = 0;
 
 struct Data
 {
@@ -241,8 +241,9 @@ static void errorCodeTask(void *pvParameters)
     xSemaphoreTake(dataProtectionSemaphore, semaphoreWaitTime / portTICK_PERIOD_MS);
     float filteredAnalgoueReading = taskData.averageAnalogueReading;
     xSemaphoreGive(dataProtectionSemaphore);
-  
+
     // If filtered analogue value is greater than half of the maximum range (3.3V / 2 = 1.65V)
+    unsigned char errorCode;
     if (filteredAnalgoueReading > 1.65)
     {
       errorCode = 1;
@@ -251,6 +252,9 @@ static void errorCodeTask(void *pvParameters)
     {
       errorCode = 0;
     }
+
+    // Send the updated error code to the queue
+    xQueueSend(errorCodeQueue, &errorCode, 10);
     
     // Check stack size
 //    unsigned int temp = uxTaskGetStackHighWaterMark(nullptr);
@@ -268,8 +272,11 @@ static void errorCodeLEDTask(void *pvParameters)
 
   for (;;)
   {
+    // Get the most recent value from the error code queue
+    unsigned char newestErrorCode = 0;
+    xQueueReceive(errorCodeQueue, &newestErrorCode, 10);
     // Turn LED on if the error code is 1
-    if (errorCode == 1)
+    if (newestErrorCode == 1)
       digitalWrite(ledPin, HIGH);
     // Turn LED off if the error code is 0
     else
@@ -287,7 +294,7 @@ static void errorCodeLEDTask(void *pvParameters)
 // Task 9: Print data
 static void dataPrintTask(void *pvParameters)
 {
-    Task task9 = {2000, 0};
+    Task task9 = {1000, 0};
 
     Data printData = { 0, 0, 0 };
     
@@ -329,8 +336,8 @@ void setup() {
 
   // Create a semaphore to protect the data struct resource
   dataProtectionSemaphore = xSemaphoreCreateBinary();
-  analogueReadingQueue = xQueueCreate(2, sizeof(float));
-  errorCodeQueue = xQueueCreate(2, sizeof(unsigned char));
+  analogueReadingQueue = xQueueCreate(1, sizeof(float));
+  errorCodeQueue = xQueueCreate(1, sizeof(unsigned char));
 
   // Create tasks 1-9
   xTaskCreate(
