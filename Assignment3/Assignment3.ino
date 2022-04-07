@@ -8,10 +8,7 @@
 
 #define semaphoreWaitTime 1000
 
-//float newestAnalogueReading = 0.0;
-float filterArray[] = {0, 0, 0, 0};
-//unsigned char errorCode = 0;
-
+// A struct to hold shared data
 struct Data
 {
   unsigned char buttonState;
@@ -19,9 +16,11 @@ struct Data
   float averageAnalogueReading;
 } taskData = { 0, 0, 0 };
 
+// Queue and semaphore declarations
 SemaphoreHandle_t dataProtectionSemaphore;
 QueueHandle_t analogueReadingQueue, errorCodeQueue;
 
+// A struct to hold the period of a task, as well as a handle(ended up not being used)
 struct Task 
 {
   unsigned int taskDelay;
@@ -35,13 +34,14 @@ struct Task
 // Task 1: Digital watchdog
 static void digitalWatchdogTask(void *pvParameters)
 {
+    // Task 1 period: 20ms
     Task task1 = {20, 0};
-
+    
     for (;;)
     { 
        // Pulse the output high for 50 microseconds
        digitalWrite(watchdogPin, HIGH);
-       // Blocking delay or vTaskDelay?
+       // For such a short time a blocking delay was used over vTaskDelay
        delayMicroseconds(50);
        // Set the output low until the task is re-executed 20ms later
        digitalWrite(watchdogPin, LOW);
@@ -162,6 +162,7 @@ static void analogueReadTask(void *pvParameters)
 
 
 // Task 5: Average the last four readings of task 4
+float filterArray[] = {0, 0, 0, 0};
 static void analogueAverageTask(void *pvParameters)
 {  
     Task task5 = {42, 0};
@@ -340,6 +341,8 @@ void setup() {
   errorCodeQueue = xQueueCreate(1, sizeof(unsigned char));
 
   // Create tasks 1-9
+  // Each task is created with a stack size: determined by checking stack size then altering it until there is no wasted stack (with a bit extra as a buffer)
+  // and a priority: set based on period to mimic a rate monotonic style
   xTaskCreate(
     digitalWatchdogTask,  
     "Task1",
