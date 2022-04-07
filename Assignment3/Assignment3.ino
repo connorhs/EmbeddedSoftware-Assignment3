@@ -114,7 +114,8 @@ static void frequencyMeasureTask(void *pvParameters)
   for (;;)
   {
     // Use the pulseIn() Arduino function to get the high period of the square wave in microseconds. This is half the period of the full square wave
-    float period = pulseIn(frequencyMeasurePin, HIGH);
+    // This function will time out after 2ms
+    float period = pulseIn(frequencyMeasurePin, HIGH, 2);
     // Double the high period to get the period of the full square wave
     period *= 2;
     // Get the frequency in Hz: f = 1/T(s) = 1000000/T(us)
